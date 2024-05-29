@@ -71,8 +71,11 @@ func (dev HidDevice) ReadSensor() (*Data, error) {
 		}
 	}(openDevice)
 
-	// tell the sensor to read and report the temperature
-	_, err = openDevice.Write([]byte{0x44})
+	// tell the sensor to read and report the temperature	
+	OW_MATCH_ROM := []byte{0x55}
+	DS18X20_CONVERT_T := []byte{0x44}
+	command := append(OW_MATCH_ROM, append(openDevice.Id(), DS18X20_CONVERT_T...)...)
+	_, err = openDevice.Write(command)
 	if err != nil {
 		return nil, err
 	}
