@@ -71,6 +71,12 @@ func (dev HidDevice) ReadSensor() (*Data, error) {
 		}
 	}(openDevice)
 
+	// tell the sensor to read and report the temperature
+	_, err = openDevice.Write([]byte{0x44})
+	if err != nil {
+		return nil, err
+	}
+	
 	buf, read, err := readToBuffer(openDevice)
 	if err != nil {
 		return nil, err
