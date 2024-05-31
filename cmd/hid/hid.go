@@ -75,10 +75,7 @@ func (dev HidDevice) ReadSensor() (*Data, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := parseBuffer(buf, read)
-	if err != nil {
-		return nil, err
-	}
+	data := parseBuffer(buf, read)
 
 	// tell the sensor to read and report the temperature	
 	// https://github.com/karalabe/hid/blob/573246063e52c0d0a3a12036a8dfe8f286379e96/hid.go#L21
