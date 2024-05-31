@@ -9,6 +9,7 @@ import (
 	"os"
 	"encoding/csv"
 	"time"
+	"path/filepath"
 )
 
 // Definieren Sie eine Struktur für Ihre Daten
@@ -36,7 +37,12 @@ func getLastModified(fileName string) (int64, error) {
 }
 
 func (collector *TempsenseCollector) readSensorsCsv() error {
-	fileName := "sensors.csv"
+	ex, err := os.Executable()
+	if err!= nil {
+        	return err
+	}
+	exePath := filepath.Dir(ex)
+	fileName := exePath + "/../cfg/sensors.csv"
 	lastModifiedFromFile, error := getLastModified(fileName)
 	if error != nil {
 		fmt.Println("Error checking file: %s: %s", fileName, error)
@@ -45,9 +51,9 @@ func (collector *TempsenseCollector) readSensorsCsv() error {
 	if collector.lastModified!= lastModifiedFromFile {
 		collector.lastModified = lastModifiedFromFile
 		// Perform some actions here.
-		fmt.Println("File has been modified. Reading it...")
+		fmt.Println("File has been modified. Reading it: %s", fileName)
 	} else {
-		fmt.Println("File is unchanged.")
+		// fmt.Println("File is unchanged: %s", fileName)
 		return nil
 	}
 
