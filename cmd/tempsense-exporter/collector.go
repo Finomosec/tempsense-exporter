@@ -6,7 +6,9 @@ import (
 	"github.com/vgropp/tempsense-exporter/cmd/hid"
 	"log"
 	"strconv"
-	"strings"
+	"os"
+	"encoding/csv"
+	"time"
 )
 
 // Definieren Sie eine Struktur für Ihre Daten
@@ -17,37 +19,76 @@ type Data struct {
 	Type  string
 }
 
-func (collector *TempsenseCollector) init() {
-	// Ihr Datenstring
-	dataString := `nr,id,name,type
-1,543854836853,Garten,outdoors`
+type TempsenseCollector struct {
+	tempsenseMetric *prometheus.Desc
+	dataMap map[string]Data
+	lastModified int64
+}
 
-	// Trennen Sie den String nach Zeilenumbrüchen
-	lines := strings.Split(dataString, "\n")
+// getLastModified retrieves the last modified time of a given file.
+func getLastModified(fileName string) (int64, error) {
+	fileInfo, err := os.Stat(fileName)
+	if err!= nil {
+		return 0, err
+	}
+	modTime := fileInfo.ModTime()
+	return modTime.UnixNano() / int64(time.Millisecond), nil
+}
 
-	// Erstellen Sie ein Map, um auf die Daten basierend auf der ID zuzugreifen
+func (collector *TempsenseCollector) readSensorsCsv() error {
+	fileName := "sensors.csv"
+	lastModifiedFromFile, error := getLastModified(fileName)
+	if error != nil {
+		fmt.Println("Error checking file: %s: %s", fileName, error)
+		return error
+	}
+	if collector.lastModified!= lastModifiedFromFile {
+		collector.lastModified = lastModifiedFromFile
+		// Perform some actions here.
+		fmt.Println("File has been modified. Reading it...")
+	} else {
+		fmt.Println("File is unchanged.")
+		return nil
+	}
+
+	file, err := os.Open(fileName)
+	if err!= nil {
+		return err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	_, err = reader.Read() // Liest die Kopfzeile
+	if err!= nil {
+		return err
+	}
+
 	collector.dataMap = make(map[string]Data)
-	for i, line := range lines {
-		if i == 0 || len(line) == 0 { // Überprüfen, ob die Zeile nicht leer ist
-			continue
+	for {
+		record, err := reader.Read()
+		if err!= nil {
+			break
 		}
-		parts := strings.Split(line, ",")
-		if len(parts) >= 3 { // Stellen sicher, dass genügend Teile vorhanden sind
-			id := parts[1]
+		if len(record) >= 3 {
+			id := record[1]
 			data := Data{
-				Nr:    parts[0],
+				Nr:    record[0],
 				ID:    id,
-				Name:  parts[2],
-				Type:  parts[3],
+				Name:  record[2],
+				Type:  record[3],
 			}
 			collector.dataMap[id] = data
 		}
 	}
+	collector.PrintDataMap()
+	return nil
+}
 
-	// Zugriff auf die Daten basierend auf der ID
-	// fmt.Println("Daten für ID 543854836853:")
-	// daten := collector.dataMap["543854836853"]
-	// fmt.Printf("%+v\n", daten)
+
+func (collector *TempsenseCollector) PrintDataMap() {
+	for _, data := range collector.dataMap {
+		fmt.Printf("ID: %s, Nr: %s, Name: %s, Type: %s\n", data.ID, data.Nr, data.Name, data.Type)
+	}
 }
 
 // Hilfsfunktion zum Parsen von Strings in Integer
@@ -59,19 +100,15 @@ func parseInt(s string) int {
 	return result
 }
 
-
-type TempsenseCollector struct {
-	tempsenseMetric *prometheus.Desc
-	dataMap map[string]Data
-}
-
 func NewTempsenseCollector() *TempsenseCollector {
-	return &TempsenseCollector{
+	collector := &TempsenseCollector{
 		tempsenseMetric: prometheus.NewDesc("temperature_sensor_celsius",
 			"shows current temperature as reported by the ds18b20",
 			[]string{"display_name", "id", "sensor_nr", "sensor_type"}, nil,
 		),
 	}
+	fmt.Println("Collector created.")
+	return collector
 }
 
 func (collector *TempsenseCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -126,6 +163,7 @@ func insertAt(s string, pos int, c string) string {
 
 func (collector *TempsenseCollector) sendTemperatureMetric(data *hid.Data, deviceNum int) prometheus.Metric {
     id := insertAt(data.SensorsIdHex(), 2, "-")
+    collector.readSensorsCsv()
     extData, exists := collector.dataMap[id]
     var metric prometheus.Metric
     if exists {
