@@ -71,17 +71,10 @@ func (dev HidDevice) ReadSensor() (*Data, error) {
 		}
 	}(openDevice)
 
-	buf, read, err := readToBuffer(openDevice)
-	if err != nil {
-		return nil, err
-	}
-	data := parseBuffer(buf, read)
-
 	// tell the sensor to read and report the temperature	
-	// https://github.com/karalabe/hid/blob/573246063e52c0d0a3a12036a8dfe8f286379e96/hid.go#L21
 	OW_MATCH_ROM := []byte{0x55}
 	DS18X20_CONVERT_T := []byte{0x44}
-	command := append(OW_MATCH_ROM, append(data.SensorId, DS18X20_CONVERT_T...)...)
+	command := append(OW_MATCH_ROM, append(openDevice.Id(), DS18X20_CONVERT_T...)...)
 	_, err = openDevice.Write(command)
 	if err != nil {
 		return nil, err
