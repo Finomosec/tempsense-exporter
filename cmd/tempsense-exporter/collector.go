@@ -10,6 +10,7 @@ import (
 	"encoding/csv"
 	"time"
 	"path/filepath"
+	"encoding/hex"
 )
 
 // Definieren Sie eine Struktur für Ihre Daten
@@ -34,6 +35,37 @@ func getLastModified(fileName string) (int64, error) {
 	}
 	modTime := fileInfo.ModTime()
 	return modTime.UnixNano() / int64(time.Millisecond), nil
+}
+
+func convertAddress(input string) string {
+	// Entfernen des Präfixes "28-" und Sufix "aa", falls vorhanden
+	prefix := ""
+	if input[:3] == "28-" && input[len(input)-2:] == "aa" {
+		prefix = "28-"
+		input = input[3 : len(input)-2]
+	} else {
+		panic("wrong input: " + input)
+	}
+
+	// Umwandlung des Hexadezimalstrings in Bytes
+	data, err := hex.DecodeString(input)
+	if err!= nil {
+		panic(err)
+	}
+
+	// Umkehrung der Bytes
+	reversedData := make([]byte, len(data))
+	for i, v := range data {
+		reversedData[len(data)-i-1] = v
+	}
+
+	// Umwandlung der umgekehrten Bytes zurück in einen Hexadezimalstring
+	reversedHexString := hex.EncodeToString(reversedData)
+
+	// Zusammenfügen des Präfixes und der umgekehrten Hexadezimal-Zeichenkette
+	result := prefix + reversedHexString
+
+	return result
 }
 
 func (collector *TempsenseCollector) readSensorsCsv() error {
@@ -168,7 +200,7 @@ func insertAt(s string, pos int, c string) string {
 }
 
 func (collector *TempsenseCollector) sendTemperatureMetric(data *hid.Data, deviceNum int) prometheus.Metric {
-    id := insertAt(data.SensorsIdHex(), 2, "-")
+    id := convertAddress(insertAt(data.SensorsIdHex(), 2, "-"))
     collector.readSensorsCsv()
     extData, exists := collector.dataMap[id]
     var metric prometheus.Metric
