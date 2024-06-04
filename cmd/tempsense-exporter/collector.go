@@ -40,11 +40,13 @@ func getLastModified(fileName string) (int64, error) {
 func convertAddress(input string) string {
 	// Entfernen des Präfixes "28-" und Sufix "aa", falls vorhanden
 	prefix := ""
-	if input[:3] == "28-" && input[len(input)-2:] == "aa" {
+	// if input[:3] == "28-" && input[len(input)-2:] == "aa" {
+	if input[:3] == "28-" && len(input) == 17 {
 		prefix = "28-"
 		input = input[3 : len(input)-2]
 	} else {
-		panic("wrong input: " + input)
+		fmt.Println("wrong input: " + input)
+		return input
 	}
 
 	// Umwandlung des Hexadezimalstrings in Bytes
@@ -171,16 +173,16 @@ func (collector *TempsenseCollector) readDevices(ch chan<- prometheus.Metric, de
 func (collector *TempsenseCollector) readSensors(device hid.Device, ch chan<- prometheus.Metric) {
 	numSens := 0
 	for {
-		numSens++
 		data, err := device.ReadSensor()
 		if err != nil {
 			fmt.Printf("error reading device %v: %v\n", device.GetNum(), err)
 			break
 		}
-		collector.addToMetric(ch, data, device.GetNum())
 		if numSens >= int(data.SensorCount) {
 			break
 		}
+		numSens++
+		collector.addToMetric(ch, data, device.GetNum())
 	}
 }
 
