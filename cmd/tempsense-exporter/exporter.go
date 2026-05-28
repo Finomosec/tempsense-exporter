@@ -15,7 +15,11 @@ var (
 func main() {
 	flag.Parse()
 
-	prometheus.MustRegister(NewTempsenseCollector())
+	// prometheus.MustRegister(NewTempsenseCollector())
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewTempsenseCollector())
+	prometheus.DefaultRegisterer = reg
+
 	http.Handle("/metrics", promhttp.Handler())
 	log.Fatal(http.ListenAndServe(*flagAddr, nil))
 }
