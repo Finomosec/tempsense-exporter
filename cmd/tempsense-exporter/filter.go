@@ -14,6 +14,8 @@ const (
 	minStaleDeviation = 0.15
 	confirmTolerance  = 0.3
 	maxRereads        = 2
+
+	firmwareInvalidDecicelsius = 2000
 )
 
 type reading struct {
@@ -77,7 +79,8 @@ func readPass(device hid.Device, prev *hid.Data) ([]reading, *hid.Data) {
 		if data.SensorCount == 0 {
 			break
 		}
-		pass = append(pass, reading{data: data, id: sensorID(data), stale: data.Temp == prev.Temp})
+		unusable := data.Temp == prev.Temp || data.Temp == firmwareInvalidDecicelsius
+		pass = append(pass, reading{data: data, id: sensorID(data), stale: unusable})
 		prev = data
 		if len(pass) >= int(data.SensorCount) {
 			break

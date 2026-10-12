@@ -90,6 +90,18 @@ func TestUnconfirmedValueIsDropped(t *testing.T) {
 	dev.AssertNumberOfCalls(t, "ReadSensor", 10)
 }
 
+func TestFirmwareInvalidMarkerIsNeverExported(t *testing.T) {
+	dev := new(MockDevice)
+	collector := NewTempsenseCollector()
+	expectReads(dev,
+		sensor(2, 250), sensor(1, 2000), sensor(2, 251),
+		sensor(1, 2000), sensor(2, 252),
+		sensor(1, 2000), sensor(2, 253))
+
+	assert.Equal(t, map[string]float64{idB: 25.1}, scrape(t, collector, dev),
+		"200.0°C is the patched firmware's marker for a failed read")
+}
+
 func TestNoSensorConnected(t *testing.T) {
 	dev := new(MockDevice)
 	expectReads(dev, &hid.Data{SensorCount: 0})
