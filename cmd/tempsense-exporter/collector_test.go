@@ -1,45 +1,101 @@
 package main
 
 import (
+	"testing"
+
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/vgropp/tempsense-exporter/cmd/hid"
-	"testing"
 )
 
-func TestCallingDevices(t *testing.T) {
-	testDevice := new(MockDevice)
-	sensorA := &hid.Data{SensorCount: 2, SensorCurrent: 2, Temp: 270, SensorId: [8]byte{1, 2, 3, 4, 5, 6, 7, 8}}
-	sensorB := &hid.Data{SensorCount: 2, SensorCurrent: 1, Temp: 270, SensorId: [8]byte{1, 2, 3, 4, 5, 6, 7, 7}}
-	expectCycle := func() {
-		testDevice.On("ReadSensor").Return(sensorA, nil).Once()
-		testDevice.On("ReadSensor").Return(sensorB, nil).Once()
+func sensor(nr byte, decicelsius uint16) *hid.Data {
+	return &hid.Data{SensorCount: 2, SensorCurrent: nr, Temp: decicelsius, SensorId: [8]byte{0x28, nr, 0, 0, 0, 0, 0, 0xaa}}
+}
+
+var idA, idB = sensorID(sensor(1, 0)), sensorID(sensor(2, 0))
+
+func expectReads(dev *MockDevice, reads ...*hid.Data) {
+	for _, r := range reads {
+		dev.On("ReadSensor").Return(r, nil).Once()
 	}
+}
+
+func scrape(t *testing.T, collector *TempsenseCollector, dev *MockDevice) map[string]float64 {
 	c := make(chan prometheus.Metric, 10)
+	collector.readSensors(dev, c)
+	close(c)
+	values := make(map[string]float64)
+	for m := range c {
+		var pb dto.Metric
+		require.NoError(t, m.Write(&pb))
+		for _, l := range pb.GetLabel() {
+			if l.GetName() == "id" {
+				values[l.GetValue()] = pb.GetGauge().GetValue()
+			}
+		}
+	}
+	return values
+}
+
+func TestCallingDevices(t *testing.T) {
+	dev := new(MockDevice)
 	collector := NewTempsenseCollector()
 
-	expectCycle()
-	expectCycle()
-	collector.readSensors(testDevice, c)
-	testDevice.AssertNumberOfCalls(t, "ReadSensor", 4)
-	assert.Len(t, c, 2, "one metric per sensor after warmup read")
+	expectReads(dev, sensor(2, 250), sensor(1, 270), sensor(2, 251))
+	assert.Equal(t, map[string]float64{idA: 27.0, idB: 25.1}, scrape(t, collector, dev))
+	dev.AssertNumberOfCalls(t, "ReadSensor", 3)
 
-	expectCycle()
-	collector.readSensors(testDevice, c)
-	testDevice.AssertNumberOfCalls(t, "ReadSensor", 6)
-	assert.Len(t, c, 4, "known sensors are read once without warmup")
+	expectReads(dev, sensor(1, 270), sensor(2, 252), sensor(1, 271))
+	assert.Equal(t, map[string]float64{idA: 27.1, idB: 25.2}, scrape(t, collector, dev))
+	dev.AssertNumberOfCalls(t, "ReadSensor", 6)
+}
+
+func TestStaleValueIsReplacedByReread(t *testing.T) {
+	dev := new(MockDevice)
+	collector := NewTempsenseCollector()
+	expectReads(dev, sensor(2, 250), sensor(1, 196), sensor(2, 259))
+	scrape(t, collector, dev)
+
+	expectReads(dev, sensor(2, 259), sensor(1, 259), sensor(2, 259), sensor(1, 196), sensor(2, 259))
+	assert.Equal(t, map[string]float64{idA: 19.6, idB: 25.9}, scrape(t, collector, dev),
+		"A repeating B's value is the firmware's stale buffer, not a measurement")
+	dev.AssertNumberOfCalls(t, "ReadSensor", 8)
+}
+
+func TestRealJumpIsAcceptedWhenConfirmed(t *testing.T) {
+	dev := new(MockDevice)
+	collector := NewTempsenseCollector()
+	expectReads(dev, sensor(2, 250), sensor(1, 200), sensor(2, 250))
+	scrape(t, collector, dev)
+
+	expectReads(dev, sensor(2, 250), sensor(1, 230), sensor(2, 251), sensor(1, 231), sensor(2, 251))
+	assert.Equal(t, map[string]float64{idA: 23.1, idB: 25.1}, scrape(t, collector, dev))
+}
+
+func TestUnconfirmedValueIsDropped(t *testing.T) {
+	dev := new(MockDevice)
+	collector := NewTempsenseCollector()
+	expectReads(dev, sensor(2, 250), sensor(1, 196), sensor(2, 259))
+	scrape(t, collector, dev)
+
+	expectReads(dev,
+		sensor(2, 259), sensor(1, 259), sensor(2, 259),
+		sensor(1, 259), sensor(2, 259),
+		sensor(1, 259), sensor(2, 259))
+	assert.Equal(t, map[string]float64{idB: 25.9}, scrape(t, collector, dev),
+		"a value that stays stale over all re-reads must not be exported")
+	dev.AssertNumberOfCalls(t, "ReadSensor", 10)
 }
 
 func TestNoSensorConnected(t *testing.T) {
-	testDevice := new(MockDevice)
-	testDevice.On("ReadSensor").Return(&hid.Data{SensorCount: 0}, nil).Once()
-	c := make(chan prometheus.Metric, 10)
+	dev := new(MockDevice)
+	expectReads(dev, &hid.Data{SensorCount: 0})
 
-	NewTempsenseCollector().readSensors(testDevice, c)
-
-	testDevice.AssertNumberOfCalls(t, "ReadSensor", 1)
-	assert.Empty(t, c, "no metric without a connected sensor")
+	assert.Empty(t, scrape(t, NewTempsenseCollector(), dev), "no metric without a connected sensor")
+	dev.AssertNumberOfCalls(t, "ReadSensor", 1)
 }
 
 type MockDevice struct {

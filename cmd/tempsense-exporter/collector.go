@@ -23,37 +23,11 @@ type Data struct {
 	Type  string
 }
 
-// ringBuffer stores the last 10 temperature readings for a sensor.
-type ringBuffer struct {
-	values [10]float64
-	count  int
-	pos    int
-}
-
-func (rb *ringBuffer) add(v float64) {
-	rb.values[rb.pos] = v
-	rb.pos = (rb.pos + 1) % len(rb.values)
-	if rb.count < len(rb.values) {
-		rb.count++
-	}
-}
-
-func (rb *ringBuffer) average() float64 {
-	if rb.count == 0 {
-		return 0
-	}
-	sum := 0.0
-	for i := 0; i < rb.count; i++ {
-		sum += rb.values[i]
-	}
-	return sum / float64(rb.count)
-}
-
 type TempsenseCollector struct {
 	tempsenseMetric *prometheus.Desc
 	dataMap map[string]Data
 	lastModified int64
-	sensorHistory map[string]*ringBuffer
+	history       map[string]*sensorHistory
 	mu            sync.Mutex
 }
 
@@ -176,7 +150,7 @@ func NewTempsenseCollector() *TempsenseCollector {
 			"shows current temperature as reported by the ds18b20",
 			[]string{"display_name", "id", "sensor_nr", "sensor_type"}, nil,
 		),
-		sensorHistory: make(map[string]*ringBuffer),
+		history: make(map[string]*sensorHistory),
 	}
 	fmt.Println("Collector created.")
 	return collector
@@ -187,6 +161,8 @@ func (collector *TempsenseCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (collector *TempsenseCollector) Collect(ch chan<- prometheus.Metric) {
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
 	devices, err := hid.LookupDevices()
 	if err != nil {
 		log.Print(err)
@@ -205,107 +181,67 @@ func sensorID(data *hid.Data) string {
 	return convertAddress(insertAt(data.SensorsIdHex(), 2, "-"))
 }
 
-func (collector *TempsenseCollector) isGlitch(id string, temp float64) bool {
-	rb, exists := collector.sensorHistory[id]
-	if !exists || rb.count == 0 {
-		return false
-	}
-	return math.Abs(temp-rb.average()) > 10
-}
-
-func (collector *TempsenseCollector) recordValue(id string, temp float64) {
-	rb, exists := collector.sensorHistory[id]
-	if !exists {
-		rb = &ringBuffer{}
-		collector.sensorHistory[id] = rb
-	}
-	rb.add(temp)
-}
-
-func (collector *TempsenseCollector) readAllSensors(device hid.Device) []*hid.Data {
-	var readings []*hid.Data
-	for {
-		data, err := device.ReadSensor()
-		if err != nil {
-			fmt.Printf("error reading device %v: %v\n", device.GetNum(), err)
-			break
-		}
-		if data.SensorCount == 0 {
-			break
-		}
-		readings = append(readings, data)
-		if len(readings) >= int(data.SensorCount) {
-			break
-		}
-	}
-	return readings
-}
-
 func (collector *TempsenseCollector) readSensors(device hid.Device, ch chan<- prometheus.Metric) {
-	// First pass: read all sensors
-	readings := collector.readAllSensors(device)
-
-	collector.mu.Lock()
-	defer collector.mu.Unlock()
-
-	// Per-sensor warmup: if a sensor has no history, its first read may glitch.
-	// Identify new sensors, do a second read, and use the second value for those.
-	newSensors := make(map[string]bool)
-	for _, data := range readings {
-		if _, exists := collector.sensorHistory[sensorID(data)]; !exists {
-			newSensors[sensorID(data)] = true
-		}
+	pass, prev := readPass(device, nil)
+	var order []string
+	accepted := make(map[string]*hid.Data)
+	candidates := make(map[string][]float64)
+	pending := make(map[string]bool)
+	for _, r := range pass {
+		order = append(order, r.id)
+		collector.judge(r, accepted, candidates, pending)
 	}
-	if len(newSensors) > 0 {
-		secondReadings := collector.readAllSensors(device)
-		secondMap := make(map[string]*hid.Data)
-		for _, data := range secondReadings {
-			secondMap[sensorID(data)] = data
-		}
-		for i, data := range readings {
-			id := sensorID(data)
-			if newSensors[id] {
-				if second, ok := secondMap[id]; ok {
-					readings[i] = second
-				}
+	for i := 0; i < maxRereads && len(pending) > 0 && prev != nil; i++ {
+		var retry []reading
+		retry, prev = readPass(device, prev)
+		for _, r := range retry {
+			if pending[r.id] {
+				collector.judge(r, accepted, candidates, pending)
 			}
 		}
 	}
-
-	// Check for glitches (>10°C deviation from history)
-	hasGlitch := false
-	for _, data := range readings {
-		if collector.isGlitch(sensorID(data), data.Temperature()) {
-			hasGlitch = true
-			break
-		}
+	for id := range pending {
+		log.Printf("dropping sensor %s: unconfirmed values %v", id, candidates[id])
 	}
-
-	// Retry all sensors if any glitch detected
-	if hasGlitch {
-		retryReadings := collector.readAllSensors(device)
-		retryMap := make(map[string]*hid.Data)
-		for _, data := range retryReadings {
-			retryMap[sensorID(data)] = data
+	for _, id := range order {
+		data, ok := accepted[id]
+		if !ok {
+			continue
 		}
-		for i, data := range readings {
-			id := sensorID(data)
-			if collector.isGlitch(id, data.Temperature()) {
-				if retryData, ok := retryMap[id]; ok {
-					log.Printf("glitch detected for sensor %s: %.1f\u00b0C (avg: %.1f\u00b0C), retry: %.1f\u00b0C",
-						id, data.Temperature(), collector.sensorHistory[id].average(), retryData.Temperature())
-					readings[i] = retryData
-				}
-			}
-		}
-	}
-
-	// Emit metrics and update history
-	for _, data := range readings {
-		id := sensorID(data)
-		collector.recordValue(id, data.Temperature())
+		collector.historyOf(id).add(data.Temperature())
 		collector.addToMetric(ch, data, device.GetNum())
 	}
+}
+
+func (collector *TempsenseCollector) historyOf(id string) *sensorHistory {
+	h, exists := collector.history[id]
+	if !exists {
+		h = &sensorHistory{}
+		collector.history[id] = h
+	}
+	return h
+}
+
+func (collector *TempsenseCollector) judge(r reading, accepted map[string]*hid.Data, candidates map[string][]float64, pending map[string]bool) {
+	t := r.data.Temperature()
+	if !isSuspicious(r, collector.historyOf(r.id)) {
+		accepted[r.id] = r.data
+		delete(pending, r.id)
+		return
+	}
+	if !r.stale {
+		for _, c := range candidates[r.id] {
+			if math.Abs(c-t) <= confirmTolerance {
+				log.Printf("sensor %s: jump to %.1f\u00b0C confirmed", r.id, t)
+				accepted[r.id] = r.data
+				delete(pending, r.id)
+				return
+			}
+		}
+		candidates[r.id] = append(candidates[r.id], t)
+	}
+	log.Printf("sensor %s: suspicious %.1f\u00b0C (stale=%v), re-reading", r.id, t, r.stale)
+	pending[r.id] = true
 }
 
 
