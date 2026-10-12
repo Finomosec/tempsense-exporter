@@ -109,13 +109,13 @@ func (collector *TempsenseCollector) readSensorsCsv() error {
 	fileName := exePath + "/../cfg/sensors.csv"
 	lastModifiedFromFile, error := getLastModified(fileName)
 	if error != nil {
-		fmt.Println("Error checking file: %s: %s", fileName, error)
+		fmt.Printf("Error checking file: %s: %s\n", fileName, error)
 		return error
 	}
 	if collector.lastModified!= lastModifiedFromFile {
 		collector.lastModified = lastModifiedFromFile
 		// Perform some actions here.
-		fmt.Println("File has been modified. Reading it: %s", fileName)
+		fmt.Printf("File has been modified. Reading it: %s\n", fileName)
 	} else {
 		// fmt.Println("File is unchanged: %s", fileName)
 		return nil
@@ -224,18 +224,19 @@ func (collector *TempsenseCollector) recordValue(id string, temp float64) {
 
 func (collector *TempsenseCollector) readAllSensors(device hid.Device) []*hid.Data {
 	var readings []*hid.Data
-	numSens := 0
 	for {
 		data, err := device.ReadSensor()
 		if err != nil {
 			fmt.Printf("error reading device %v: %v\n", device.GetNum(), err)
 			break
 		}
-		if numSens >= int(data.SensorCount) {
+		if data.SensorCount == 0 {
 			break
 		}
-		numSens++
 		readings = append(readings, data)
+		if len(readings) >= int(data.SensorCount) {
+			break
+		}
 	}
 	return readings
 }
