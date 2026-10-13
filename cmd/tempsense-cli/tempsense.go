@@ -13,11 +13,12 @@ const invalidDecicelsius = 2000
 
 // deviceState tracks the sensors of one stick to report plugged and unplugged sensors.
 type deviceState struct {
-	known   map[string]bool
-	round   map[string]bool
-	empty   bool
-	prev    *hid.Data
-	started bool
+	known     map[string]bool
+	round     map[string]bool
+	fullRound bool
+	empty     bool
+	prev      *hid.Data
+	started   bool
 }
 
 func main() {
@@ -84,6 +85,10 @@ func readNextSensor(device hid.HidDevice, state *deviceState) bool {
 	state.empty = false
 
 	id := data.LinuxID()
+	if data.SensorCurrent == 1 {
+		state.round = map[string]bool{}
+		state.fullRound = true
+	}
 	if state.started && !state.known[id] {
 		fmt.Printf("%v: + new sensor %v\n", stamp(), id)
 		state.known[id] = true
@@ -93,8 +98,11 @@ func readNextSensor(device hid.HidDevice, state *deviceState) bool {
 	state.prev = data
 
 	if data.SensorCurrent >= data.SensorCount {
-		reportChanges(state, state.round)
+		if state.fullRound {
+			reportChanges(state, state.round)
+		}
 		state.round = map[string]bool{}
+		state.fullRound = false
 	}
 	return true
 }
