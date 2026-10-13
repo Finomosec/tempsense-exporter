@@ -21,6 +21,9 @@ type deviceState struct {
 	started   bool
 }
 
+// failing suppresses repeated error messages until a read succeeds again.
+var failing bool
+
 func main() {
 	states := make(map[int]*deviceState)
 	for {
@@ -38,7 +41,7 @@ func main() {
 				}
 			}
 			if !ok {
-				fmt.Printf("%v: lost device, searching again\n", stamp())
+				time.Sleep(time.Second)
 				break
 			}
 		}
@@ -46,18 +49,19 @@ func main() {
 }
 
 func waitForDevices() *hid.HidDevices {
-	waiting := false
 	for {
 		devices, err := hid.LookupDevices()
 		if err == nil {
-			for i, device := range devices.Devices {
-				fmt.Printf("device found %v: %s[%s]\n", i+1, device.DeviceInfo.Manufacturer, device.DeviceInfo.Product)
+			if !failing {
+				for i, device := range devices.Devices {
+					fmt.Printf("device found %v: %s[%s]\n", i+1, device.DeviceInfo.Manufacturer, device.DeviceInfo.Product)
+				}
 			}
 			return devices
 		}
-		if !waiting {
+		if !failing {
 			fmt.Printf("%v: %v, waiting for a device\n", stamp(), err)
-			waiting = true
+			failing = true
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -70,8 +74,15 @@ func stamp() string {
 func readNextSensor(device hid.HidDevice, state *deviceState) bool {
 	data, err := device.ReadSensor()
 	if err != nil {
-		fmt.Printf("error reading device %v: %v\n", device.Num, err)
+		if !failing {
+			fmt.Printf("%v: error reading device %v: %v (in use by the exporter or unplugged?), retrying\n", stamp(), device.Num, err)
+			failing = true
+		}
 		return false
+	}
+	if failing {
+		fmt.Printf("%v: device %v readable again\n", stamp(), device.Num)
+		failing = false
 	}
 	if data.SensorCount == 0 {
 		if !state.empty {
