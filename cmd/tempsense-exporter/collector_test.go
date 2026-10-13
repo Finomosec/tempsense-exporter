@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -100,6 +102,31 @@ func TestFirmwareInvalidMarkerIsNeverExported(t *testing.T) {
 
 	assert.Equal(t, map[string]float64{idB: 25.1}, scrape(t, collector, dev),
 		"200.0°C is the patched firmware's marker for a failed read")
+}
+
+func TestSensorsCsvPathIsConfigurable(t *testing.T) {
+	csvPath := filepath.Join(t.TempDir(), "sensors.csv")
+	require.NoError(t, os.WriteFile(csvPath, []byte("nr,id,name,type,batch\n7,"+idA+",Testraum,room,1\n"), 0o644))
+	collector := NewTempsenseCollector()
+	collector.csvPath = csvPath
+	dev := new(MockDevice)
+	expectReads(dev, sensor(2, 250), sensor(1, 270), sensor(2, 251))
+	c := make(chan prometheus.Metric, 10)
+
+	collector.readSensors(dev, c)
+	close(c)
+
+	names := make(map[string]string)
+	for m := range c {
+		var pb dto.Metric
+		require.NoError(t, m.Write(&pb))
+		labels := make(map[string]string)
+		for _, l := range pb.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+		names[labels["id"]] = labels["display_name"]
+	}
+	assert.Equal(t, map[string]string{idA: "Testraum", idB: "Unknown"}, names)
 }
 
 func TestNoSensorConnected(t *testing.T) {

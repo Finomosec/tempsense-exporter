@@ -27,6 +27,7 @@ type TempsenseCollector struct {
 	tempsenseMetric *prometheus.Desc
 	dataMap map[string]Data
 	lastModified int64
+	csvPath      string
 	history       map[string]*sensorHistory
 	mu            sync.Mutex
 }
@@ -74,13 +75,22 @@ func convertAddress(input string) string {
 	return result
 }
 
-func (collector *TempsenseCollector) readSensorsCsv() error {
-	ex, err := os.Executable()
-	if err!= nil {
-        	return err
+func (collector *TempsenseCollector) sensorsCsvPath() (string, error) {
+	if collector.csvPath != "" {
+		return collector.csvPath, nil
 	}
-	exePath := filepath.Dir(ex)
-	fileName := exePath + "/../cfg/sensors.csv"
+	ex, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(ex), "..", "cfg", "sensors.csv"), nil
+}
+
+func (collector *TempsenseCollector) readSensorsCsv() error {
+	fileName, err := collector.sensorsCsvPath()
+	if err != nil {
+		return err
+	}
 	lastModifiedFromFile, error := getLastModified(fileName)
 	if error != nil {
 		fmt.Printf("Error checking file: %s: %s\n", fileName, error)

@@ -46,7 +46,12 @@ $GOPATH/bin/tempsense-exporter -h
 Usage of /home/tric/tempsense-exporter:
   -address string
         The address to listen on for HTTP requests. (default ":9181")
+  -sensors-csv string
+        Path to the sensors.csv with display names. (default "<binary dir>/../cfg/sensors.csv")
 ```
+
+The sensors.csv maps sensor ids to display names (`nr,id,name,type`, see `sensors.csv`).
+It is re-read whenever its modification time changes.
 
 ## cli
 ```
