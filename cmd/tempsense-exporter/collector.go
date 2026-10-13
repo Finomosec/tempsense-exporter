@@ -25,6 +25,7 @@ type Data struct {
 
 type TempsenseCollector struct {
 	tempsenseMetric *prometheus.Desc
+	readErrorsMetric *prometheus.Desc
 	dataMap map[string]Data
 	lastModified int64
 	csvPath      string
@@ -160,6 +161,10 @@ func NewTempsenseCollector() *TempsenseCollector {
 			"shows current temperature as reported by the ds18b20",
 			[]string{"display_name", "id", "sensor_nr", "sensor_type"}, nil,
 		),
+		readErrorsMetric: prometheus.NewDesc("temperature_sensor_read_errors_total",
+			"scratchpad read errors counted by the patched stick firmware since the sensor was detected; result=retried: fixed by a re-read, result=failed: all reads failed",
+			[]string{"display_name", "id", "sensor_nr", "sensor_type", "result"}, nil,
+		),
 		history: make(map[string]*sensorHistory),
 	}
 	fmt.Println("Collector created.")
@@ -168,6 +173,7 @@ func NewTempsenseCollector() *TempsenseCollector {
 
 func (collector *TempsenseCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- collector.tempsenseMetric
+	ch <- collector.readErrorsMetric
 }
 
 func (collector *TempsenseCollector) Collect(ch chan<- prometheus.Metric) {
@@ -200,6 +206,7 @@ func (collector *TempsenseCollector) readSensors(device hid.Device, ch chan<- pr
 	for _, r := range pass {
 		order = append(order, r.id)
 		collector.judge(r, accepted, candidates, pending)
+		collector.addReadErrors(ch, r.data)
 	}
 	for i := 0; i < maxRereads && len(pending) > 0 && prev != nil; i++ {
 		var retry []reading
@@ -269,31 +276,33 @@ func insertAt(s string, pos int, c string) string {
 	return s[:pos] + c + s[pos:]
 }
 
+// sensorLabels returns display_name, id, sensor_nr and sensor_type for a report.
+func (collector *TempsenseCollector) sensorLabels(data *hid.Data) []string {
+	id := convertAddress(insertAt(data.SensorsIdHex(), 2, "-"))
+	collector.readSensorsCsv()
+	if extData, exists := collector.dataMap[id]; exists {
+		return []string{extData.Name, id, extData.Nr, extData.Type}
+	}
+	return []string{"Unknown", id, "0", "unknown"}
+}
+
 func (collector *TempsenseCollector) sendTemperatureMetric(data *hid.Data, deviceNum int) prometheus.Metric {
-    id := convertAddress(insertAt(data.SensorsIdHex(), 2, "-"))
-    collector.readSensorsCsv()
-    extData, exists := collector.dataMap[id]
-    var metric prometheus.Metric
-    if exists {
-        metric = prometheus.MustNewConstMetric(
-            collector.tempsenseMetric,
-            prometheus.GaugeValue,
-            data.Temperature(),
-            extData.Name,
-            id,
-            extData.Nr,
-            extData.Type,
-        )
-    } else {
-        metric = prometheus.MustNewConstMetric(
-            collector.tempsenseMetric,
-            prometheus.GaugeValue,
-            data.Temperature(),
-            "Unknown",
-            id,
-            "0",
-            "unknown",
-        )
-    }
-    return metric
+	return prometheus.MustNewConstMetric(collector.tempsenseMetric, prometheus.GaugeValue, data.Temperature(), collector.sensorLabels(data)...)
+}
+
+func (collector *TempsenseCollector) addReadErrors(ch chan<- prometheus.Metric, data *hid.Data) {
+	if !data.HasErrorCounters() {
+		return
+	}
+	labels := collector.sensorLabels(data)
+	for _, c := range []struct {
+		result string
+		value  uint16
+	}{{"retried", data.Retried}, {"failed", data.Failed}} {
+		metric := prometheus.MustNewConstMetric(collector.readErrorsMetric, prometheus.CounterValue, float64(c.value), append(labels, c.result)...)
+		select {
+		case ch <- metric:
+		default:
+		}
+	}
 }

@@ -137,6 +137,50 @@ func TestNoSensorConnected(t *testing.T) {
 	dev.AssertNumberOfCalls(t, "ReadSensor", 1)
 }
 
+func TestReadErrorCountersFromPatchedFirmware(t *testing.T) {
+	dev := new(MockDevice)
+	withCounters := func(nr byte, decicelsius, retried, failed uint16) *hid.Data {
+		d := sensor(nr, decicelsius)
+		d.ReportFormat, d.Retried, d.Failed = 1, retried, failed
+		return d
+	}
+	expectReads(dev, withCounters(2, 250, 0, 0), withCounters(1, 270, 3, 1), withCounters(2, 251, 0, 0))
+
+	c := make(chan prometheus.Metric, 10)
+	NewTempsenseCollector().readSensors(dev, c)
+	close(c)
+	errors := make(map[string]float64)
+	for m := range c {
+		var pb dto.Metric
+		require.NoError(t, m.Write(&pb))
+		if pb.GetCounter() == nil {
+			continue
+		}
+		labels := map[string]string{}
+		for _, l := range pb.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+		errors[labels["id"]+"/"+labels["result"]] = pb.GetCounter().GetValue()
+	}
+	assert.Equal(t, map[string]float64{
+		idA + "/retried": 3, idA + "/failed": 1,
+		idB + "/retried": 0, idB + "/failed": 0,
+	}, errors)
+}
+
+func TestNoReadErrorMetricWithOriginalFirmware(t *testing.T) {
+	dev := new(MockDevice)
+	expectReads(dev, sensor(2, 250), sensor(1, 270), sensor(2, 251))
+	c := make(chan prometheus.Metric, 10)
+	NewTempsenseCollector().readSensors(dev, c)
+	close(c)
+	for m := range c {
+		var pb dto.Metric
+		require.NoError(t, m.Write(&pb))
+		assert.Nil(t, pb.GetCounter(), "original firmware sends no counters: %v", m.Desc())
+	}
+}
+
 type MockDevice struct {
 	mock.Mock
 }
